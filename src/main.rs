@@ -2,7 +2,8 @@ use std::{collections::HashMap, fs, io::Cursor, num::NonZeroU32};
 
 use eframe::egui;
 use egui::{
-    Color32, FontData, FontDefinitions, FontFamily, Image, Pos2, Rect, Rounding, Sense, Stroke,
+    epaint::RectShape, Color32, FontData, FontDefinitions, FontFamily, Image, Layout, Pos2, Rect,
+    Rounding, Sense, Stroke,
 };
 use image::{DynamicImage, GenericImage, GenericImageView, ImageFormat, ImageReader, Rgba};
 
@@ -28,6 +29,15 @@ fn main() -> eframe::Result {
 struct MyEguiApp {
     image: Option<TargetImage>,
     mosaic_center_distance_pixels: NonZeroU32,
+
+    trim_frame: TrimFrame,
+}
+
+struct TrimFrame {
+    left: u32,
+    top: u32,
+    right: u32,
+    bottom: u32,
 }
 
 struct TargetImage {
@@ -75,6 +85,12 @@ impl MyEguiApp {
         Self {
             image: None,
             mosaic_center_distance_pixels: NonZeroU32::new(5).unwrap(),
+            trim_frame: TrimFrame {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
         }
     }
 }
@@ -100,6 +116,12 @@ impl eframe::App for MyEguiApp {
                         selected_area: None,
                         cached_bytes: bytes,
                     });
+                    self.trim_frame = TrimFrame {
+                        left: 0,
+                        top: 0,
+                        right: 0,
+                        bottom: 0,
+                    };
                 }
             }
 
@@ -116,8 +138,52 @@ impl eframe::App for MyEguiApp {
             if let Some(image) = &mut self.image {
                 let uri = format!("bytes://{}", image.raw_file_name);
                 let image_widget = Image::from_bytes(uri.clone(), image.cached_bytes.clone());
-                let image_widget_response = ui.add(image_widget);
 
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Slider::new(
+                            &mut self.trim_frame.left,
+                            0u32..=image.saving_image.width(),
+                        )
+                        .text("左側"),
+                    );
+
+                    ui.add(
+                        egui::Slider::new(
+                            &mut self.trim_frame.right,
+                            0u32..=image.saving_image.width(),
+                        )
+                        .text("右側"),
+                    );
+                });
+
+                let image_widget_response = ui
+                    .with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
+                        ui.vertical(|ui| {
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut self.trim_frame.top,
+                                    0u32..=image.saving_image.height(),
+                                )
+                                .vertical()
+                                .text("上側"),
+                            );
+
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut self.trim_frame.bottom,
+                                    0u32..=image.saving_image.height(),
+                                )
+                                .vertical()
+                                .text("下側"),
+                            );
+                        });
+
+                        let image_widget_response = ui.add(image_widget.max_height(500.));
+
+                        return image_widget_response;
+                    })
+                    .inner;
                 let drag_res = image_widget_response.interact(Sense::drag());
 
                 if drag_res.drag_started() {
@@ -194,6 +260,26 @@ impl eframe::App for MyEguiApp {
                     );
                 }
 
+                let ratio = get_image_ratio(&image.processing_image, image_widget_response.rect);
+
+                ui.painter().add(RectShape::new(
+                    Rect::from_two_pos(
+                        Pos2::new(
+                            image_widget_response.rect.left() + self.trim_frame.left as f32 / ratio,
+                            image_widget_response.rect.top() + self.trim_frame.top as f32 / ratio,
+                        ),
+                        Pos2::new(
+                            image_widget_response.rect.right()
+                                - self.trim_frame.right as f32 / ratio,
+                            image_widget_response.rect.bottom()
+                                - self.trim_frame.bottom as f32 / ratio,
+                        ),
+                    ),
+                    Rounding::ZERO,
+                    Color32::TRANSPARENT,
+                    Stroke::new(3., Color32::GREEN),
+                ));
+
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(image.selected_area.is_some(), |ui| {
                         if ui.button("モザイク確定").clicked() {
@@ -209,14 +295,20 @@ impl eframe::App for MyEguiApp {
                                 saving_file_path =
                                     path.join(format!("mosaic_{}", &image.raw_file_name));
                             }
-                            image.saving_image.save(saving_file_path).unwrap();
+                            let croped_image = image.saving_image.crop(
+                                self.trim_frame.left,
+                                self.trim_frame.top,
+                                image.saving_image.width()
+                                    - (self.trim_frame.left + self.trim_frame.right),
+                                image.saving_image.height()
+                                    - (self.trim_frame.top + self.trim_frame.bottom),
+                            );
+                            croped_image.save(saving_file_path).unwrap();
                         }
                     }
                 });
 
-                // add horizontal border
                 ui.separator();
-                let ratio = get_image_ratio(&image.processing_image, image_widget_response.rect);
 
                 ui.horizontal(|ui| {
                     ui.label(&format!(
